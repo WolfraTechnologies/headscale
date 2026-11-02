@@ -173,12 +173,15 @@ func TestTailNode(t *testing.T) {
 			node: &types.Node{
 				GivenName: "minimal",
 				Hostinfo:  &tailcfg.Hostinfo{},
+				User: &types.User{
+					Name: "user",
+				},
 			},
 			dnsConfig:  &tailcfg.DNSConfig{},
 			baseDomain: "example.com",
 			want: &tailcfg.Node{
 				// a node name should have a dot appended
-				Name:              "minimal.example.com.",
+				Name:              "minimal.user.example.com.",
 				StableID:          "0",
 				HomeDERP:          0,
 				LegacyDERPString:  "127.3.3.40:0",

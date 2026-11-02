@@ -421,11 +421,27 @@ func (node *Node) GetFQDN(baseDomain string) (string, error) {
 	hostname := node.GivenName
 
 	if baseDomain != "" {
-		hostname = fmt.Sprintf(
-			"%s.%s.",
-			node.GivenName,
-			baseDomain,
-		)
+		// Tagged nodes keep the tailnet-wide name. User-owned nodes are named
+		// inside their user's subdomain instead, with no base-domain alias.
+		if !node.IsTagged() {
+			if node.User == nil {
+				return "", fmt.Errorf("failed to create valid FQDN: %w", ErrNodeUserHasNoName)
+			}
+
+			username := node.User.Name
+			if username == "" {
+				username, _, _ = strings.Cut(node.User.Username(), "@")
+			}
+
+			userDomain, err := util.NormaliseHostname(username)
+			if err != nil {
+				return "", fmt.Errorf("failed to create valid FQDN for user %q: %w", username, err)
+			}
+
+			hostname = fmt.Sprintf("%s.%s", hostname, userDomain)
+		}
+
+		hostname = fmt.Sprintf("%s.%s.", hostname, baseDomain)
 	}
 
 	if len(hostname) > MaxHostnameLength {

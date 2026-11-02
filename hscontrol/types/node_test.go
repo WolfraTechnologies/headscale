@@ -144,7 +144,7 @@ func TestNodeFQDN(t *testing.T) {
 				},
 			},
 			domain: "example.com",
-			want:   "test.example.com.",
+			want:   "test.user.example.com.",
 		},
 		{
 			name: "all-set",
@@ -155,7 +155,38 @@ func TestNodeFQDN(t *testing.T) {
 				},
 			},
 			domain: "example.com",
+			want:   "test.user.example.com.",
+		},
+		{
+			name: "tagged-node-keeps-base-domain",
+			node: Node{
+				GivenName: "test",
+				Tags:      []string{"tag:server"},
+				User: &User{
+					Name: "user",
+				},
+			},
+			domain: "example.com",
 			want:   "test.example.com.",
+		},
+		{
+			name: "email-local-part-fallback",
+			node: Node{
+				GivenName: "test",
+				User: &User{
+					Email: "person@example.net",
+				},
+			},
+			domain: "example.com",
+			want:   "test.person.example.com.",
+		},
+		{
+			name: "user-owned-node-without-user",
+			node: Node{
+				GivenName: "test",
+			},
+			domain:  "example.com",
+			wantErr: "failed to create valid FQDN: node user has no name",
 		},
 		{
 			name: "no-given-name",
@@ -171,6 +202,7 @@ func TestNodeFQDN(t *testing.T) {
 			name: "too-long-username",
 			node: Node{
 				GivenName: strings.Repeat("a", 256),
+				Tags:      []string{"tag:server"},
 			},
 			domain:  "example.com",
 			wantErr: fmt.Sprintf("failed to create valid FQDN (%s.example.com.): hostname too long, cannot except 255 ASCII chars", strings.Repeat("a", 256)),
@@ -184,7 +216,7 @@ func TestNodeFQDN(t *testing.T) {
 				},
 			},
 			domain: "example.com",
-			want:   "test.example.com.",
+			want:   "test.user.example.com.",
 		},
 	}
 
