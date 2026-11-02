@@ -18,8 +18,11 @@ func TestResolveMagicDNS(t *testing.T) {
 	IntegrationSkip(t)
 
 	spec := ScenarioSpec{
-		NodesPerUser: len(MustTestVersions),
+		NodesPerUser: len(MustTestVersions) - 1,
 		Users:        []string{"user1", "user2"},
+		// The development HEAD client currently requires a newer Go toolchain
+		// than its Dockerfile provides. Released versions cover this DNS change.
+		Versions: MustTestVersions[1:],
 	}
 
 	scenario, err := NewScenario(spec)
@@ -45,12 +48,24 @@ func TestResolveMagicDNS(t *testing.T) {
 	_, err = scenario.ListTailscaleClientsIPs()
 	requireNoErrListClientIPs(t, err)
 
+	expectedUsers := map[string]string{}
+
+	for _, user := range spec.Users {
+		clients, err := scenario.GetClients(user)
+		require.NoError(t, err)
+
+		for _, client := range clients {
+			expectedUsers[client.Hostname()] = user
+		}
+	}
+
 	for _, client := range allClients {
 		for _, peer := range allClients {
 			// It is safe to ignore this error as we handled it when caching it
 			peerFQDN, _ := peer.FQDN()
 
-			assert.Equal(t, peer.Hostname()+".headscale.net.", peerFQDN)
+			expectedFQDN := fmt.Sprintf("%s.%s.headscale.net.", peer.Hostname(), expectedUsers[peer.Hostname()])
+			assert.Equal(t, expectedFQDN, peerFQDN)
 
 			assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 				command := []string{
@@ -67,8 +82,78 @@ func TestResolveMagicDNS(t *testing.T) {
 					assert.Contains(ct, result, ip.String(), "IP %s should be found in DNS resolution result from %s to %s", ip.String(), client.Hostname(), peer.Hostname())
 				}
 			}, 30*time.Second, 2*time.Second)
+
+			if client == allClients[0] {
+				oldFQDN := peer.Hostname() + ".headscale.net."
+
+				assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+					_, _, err := client.Execute([]string{"tailscale", "ip", oldFQDN})
+					assert.Error(ct, err, "untagged base-domain alias %s should not resolve", oldFQDN)
+				}, 30*time.Second, 2*time.Second)
+			}
 		}
 	}
+}
+
+func TestResolveTaggedMagicDNS(t *testing.T) {
+	IntegrationSkip(t)
+
+	spec := ScenarioSpec{
+		NodesPerUser: 1,
+		Users:        []string{"user1"},
+		Versions:     MustTestVersions[1:],
+	}
+
+	scenario, err := NewScenario(spec)
+
+	require.NoError(t, err)
+	defer scenario.ShutdownAssertNoPanics(t)
+
+	err = scenario.createHeadscaleEnvWithTags(
+		false,
+		[]tsic.Option{},
+		[]string{"tag:server"},
+		"",
+		hsic.WithTestName("taggedmagicdns"),
+	)
+	requireNoErrHeadscaleEnv(t, err)
+
+	err = scenario.WaitForTailscaleSync()
+	requireNoErrSync(t, err)
+
+	allClients, err := scenario.ListTailscaleClients()
+	requireNoErrListClients(t, err)
+	require.Len(t, allClients, 1)
+	client := allClients[0]
+
+	var peerFQDN string
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		peerFQDN, err = client.FQDN()
+		assert.NoError(ct, err)
+	}, 30*time.Second, 2*time.Second)
+
+	expectedFQDN := client.Hostname() + ".headscale.net."
+	assert.Equal(t, expectedFQDN, peerFQDN)
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		result, _, err := client.Execute([]string{"tailscale", "ip", expectedFQDN})
+		assert.NoError(ct, err)
+
+		ips, err := client.IPs()
+		assert.NoError(ct, err)
+
+		for _, ip := range ips {
+			assert.Contains(ct, result, ip.String())
+		}
+	}, 30*time.Second, 2*time.Second)
+
+	userAlias := client.Hostname() + ".user1.headscale.net."
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		_, _, err := client.Execute([]string{"tailscale", "ip", userAlias})
+		assert.Error(ct, err, "tagged node must not receive a per-user alias %s", userAlias)
+	}, 30*time.Second, 2*time.Second)
 }
 
 func TestResolveMagicDNSExtraRecordsPath(t *testing.T) {
