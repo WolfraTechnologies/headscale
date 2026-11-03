@@ -348,6 +348,75 @@ func TestReadConfigFromEnv(t *testing.T) {
 	}
 }
 
+// TestPerUserSubdomainsConfig verifies that dns.per_user_subdomains is opt-in:
+// an absent key and an explicit false both leave it disabled, an explicit true
+// (or the matching environment variable) enables it, and none of the other DNS
+// settings are affected by the new option.
+func TestPerUserSubdomainsConfig(t *testing.T) {
+	const baseConfig = `noise:
+  private_key_path: "private_key.pem"
+server_url: "https://derp.no"
+`
+
+	tests := []struct {
+		name      string
+		extraYAML string
+		configEnv map[string]string
+		want      bool
+	}{
+		{
+			name: "absent-defaults-to-false",
+			want: false,
+		},
+		{
+			name:      "explicit-false",
+			extraYAML: "dns:\n  per_user_subdomains: false\n",
+			want:      false,
+		},
+		{
+			name:      "explicit-true",
+			extraYAML: "dns:\n  per_user_subdomains: true\n",
+			want:      true,
+		},
+		{
+			name: "env-true",
+			configEnv: map[string]string{
+				"HEADSCALE_DNS_PER_USER_SUBDOMAINS": "true",
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.configEnv {
+				t.Setenv(k, v)
+			}
+
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			err := os.WriteFile(configPath, []byte(baseConfig+tt.extraYAML), 0o600)
+			require.NoError(t, err)
+
+			viper.Reset()
+			require.NoError(t, LoadConfig(configPath, true))
+
+			got, err := dns()
+			require.NoError(t, err)
+
+			// Every other DNS setting must keep its stock default.
+			wantDNS := DNSConfig{
+				MagicDNS:          true,
+				OverrideLocalDNS:  true,
+				PerUserSubdomains: tt.want,
+			}
+
+			if diff := cmp.Diff(wantDNS, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("dns() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestTLSConfigValidation(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "headscale")
 	if err != nil {
