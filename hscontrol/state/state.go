@@ -315,7 +315,16 @@ func (s *State) UpdateUser(userID types.UserID, updateFn func(*types.User) error
 		return user, change.Change{}, fmt.Errorf("failed to update policy manager after user update: %w", err)
 	}
 
-	// TODO(kradalby): We might want to update nodestore with the user data
+	// Refresh the user object embedded in every affected node and emit a map
+	// update for each one. This matters for names derived from user data, such
+	// as per-user MagicDNS names, which must change without requiring the nodes
+	// to reconnect.
+	for _, nodeView := range s.nodeStore.ListNodesByUser(userID).All() {
+		node := nodeView.AsStruct()
+		node.User = user
+		s.nodeStore.PutNode(*node)
+		c = c.Merge(change.NodeAdded(node.ID))
+	}
 
 	return user, c, nil
 }

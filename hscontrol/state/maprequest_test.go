@@ -3,6 +3,7 @@ package state
 import (
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
@@ -158,4 +159,88 @@ func createTestNodeSimple(id types.NodeID) *types.Node {
 	}
 
 	return node
+}
+
+func TestUpdateUserRefreshesNodeNames(t *testing.T) {
+	prefixV4 := netip.MustParsePrefix("100.64.0.0/10")
+	prefixV6 := netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+	cfg := &types.Config{
+		Database: types.DatabaseConfig{
+			Type: types.DatabaseSqlite,
+			Sqlite: types.SqliteConfig{
+				Path: t.TempDir() + "/headscale.db",
+			},
+		},
+		PrefixV4:     &prefixV4,
+		PrefixV6:     &prefixV6,
+		IPAllocation: types.IPAllocationStrategySequential,
+		BaseDomain:   "example.com",
+		DNSConfig: types.DNSConfig{
+			PerUserSubdomains: true,
+		},
+		Policy: types.PolicyConfig{
+			Mode: types.PolicyModeDB,
+		},
+		DERP: types.DERPConfig{
+			ServerEnabled: false,
+		},
+		Tuning: types.Tuning{
+			BatchChangeDelay:      10 * time.Millisecond,
+			BatcherWorkers:        types.DefaultBatcherWorkers(),
+			NodeStoreBatchSize:    TestBatchSize,
+			NodeStoreBatchTimeout: TestBatchTimeout,
+		},
+	}
+
+	s, err := NewState(cfg)
+	require.NoError(t, err)
+
+	user, _, err := s.CreateUser(types.User{Name: "old-name"})
+	require.NoError(t, err)
+
+	untagged := &types.Node{
+		ID:         1,
+		GivenName:  "node",
+		UserID:     &user.ID,
+		User:       user,
+		MachineKey: key.NewMachine().Public(),
+		NodeKey:    key.NewNode().Public(),
+		Hostinfo:   &tailcfg.Hostinfo{},
+	}
+	tagged := &types.Node{
+		ID:         2,
+		GivenName:  "tagged",
+		UserID:     &user.ID,
+		User:       user,
+		MachineKey: key.NewMachine().Public(),
+		NodeKey:    key.NewNode().Public(),
+		Hostinfo:   &tailcfg.Hostinfo{},
+		Tags:       []string{"tag:server"},
+	}
+
+	s.nodeStore.PutNode(*untagged)
+	s.nodeStore.PutNode(*tagged)
+
+	updated, changes, err := s.UpdateUser(types.UserID(user.ID), func(u *types.User) error {
+		u.Name = "new-name"
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "new-name", updated.Name)
+	assert.ElementsMatch(t, []types.NodeID{untagged.ID, tagged.ID}, changes.PeersChanged)
+
+	nodes := s.nodeStore.ListNodesByUser(types.UserID(user.ID))
+	require.Equal(t, 2, nodes.Len())
+
+	for _, node := range nodes.All() {
+		assert.Equal(t, "new-name", node.User().Name())
+		name, err := node.GetFQDN("example.com", true)
+		require.NoError(t, err)
+
+		if node.IsTagged() {
+			assert.Equal(t, "tagged.example.com.", name)
+		} else {
+			assert.Equal(t, "node.new-name.example.com.", name)
+		}
+	}
 }
