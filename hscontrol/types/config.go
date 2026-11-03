@@ -104,14 +104,18 @@ type Config struct {
 }
 
 type DNSConfig struct {
-	MagicDNS          bool   `mapstructure:"magic_dns"`
-	BaseDomain        string `mapstructure:"base_domain"`
-	OverrideLocalDNS  bool   `mapstructure:"override_local_dns"`
-	Nameservers       Nameservers
-	SearchDomains     []string            `mapstructure:"search_domains"`
-	ExtraRecords      []tailcfg.DNSRecord `mapstructure:"extra_records"`
-	ExtraRecordsPath  string              `mapstructure:"extra_records_path"`
-	PerUserSubdomains bool                `mapstructure:"per_user_subdomains"`
+	MagicDNS         bool   `mapstructure:"magic_dns"`
+	BaseDomain       string `mapstructure:"base_domain"`
+	OverrideLocalDNS bool   `mapstructure:"override_local_dns"`
+	Nameservers      Nameservers
+	SearchDomains    []string            `mapstructure:"search_domains"`
+	ExtraRecords     []tailcfg.DNSRecord `mapstructure:"extra_records"`
+	ExtraRecordsPath string              `mapstructure:"extra_records_path"`
+
+	// PerUserSubdomains scopes untagged node names by their owning user's DNS
+	// label. Tagged node names remain unchanged. The zero value preserves the
+	// stock tailnet-wide naming behavior.
+	PerUserSubdomains bool `mapstructure:"per_user_subdomains"`
 }
 
 type Nameservers struct {
