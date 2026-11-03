@@ -181,7 +181,7 @@ func TestTailNode(t *testing.T) {
 			baseDomain: "example.com",
 			want: &tailcfg.Node{
 				// a node name should have a dot appended
-				Name:              "minimal.user.example.com.",
+				Name:              "minimal.example.com.",
 				StableID:          "0",
 				HomeDERP:          0,
 				LegacyDERPString:  "127.3.3.40:0",

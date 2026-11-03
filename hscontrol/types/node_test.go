@@ -1,6 +1,7 @@
 package types
 
 import (
+	"database/sql"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	v1 "github.com/juanfont/headscale/gen/go/headscale/v1"
 	"github.com/juanfont/headscale/hscontrol/policy/matcher"
 	"github.com/juanfont/headscale/hscontrol/util"
+	"gorm.io/gorm"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
 )
@@ -132,36 +134,14 @@ func TestNodeFQDN(t *testing.T) {
 		name    string
 		node    Node
 		domain  string
+		perUser bool
 		want    string
 		wantErr string
 	}{
 		{
-			name: "no-dnsconfig-with-username",
+			name: "disabled-preserves-stock-name",
 			node: Node{
 				GivenName: "test",
-				User: &User{
-					Name: "user",
-				},
-			},
-			domain: "example.com",
-			want:   "test.user.example.com.",
-		},
-		{
-			name: "all-set",
-			node: Node{
-				GivenName: "test",
-				User: &User{
-					Name: "user",
-				},
-			},
-			domain: "example.com",
-			want:   "test.user.example.com.",
-		},
-		{
-			name: "tagged-node-keeps-base-domain",
-			node: Node{
-				GivenName: "test",
-				Tags:      []string{"tag:server"},
 				User: &User{
 					Name: "user",
 				},
@@ -170,23 +150,77 @@ func TestNodeFQDN(t *testing.T) {
 			want:   "test.example.com.",
 		},
 		{
-			name: "email-local-part-fallback",
+			name: "enabled-cli-user",
+			node: Node{
+				GivenName: "test",
+				User: &User{
+					Name: "user",
+				},
+			},
+			domain:  "example.com",
+			perUser: true,
+			want:    "test.user.example.com.",
+		},
+		{
+			name: "enabled-tagged-node-keeps-base-domain",
+			node: Node{
+				GivenName: "test",
+				Tags:      []string{"tag:server"},
+				User: &User{
+					Name: "user",
+				},
+			},
+			domain:  "example.com",
+			perUser: true,
+			want:    "test.example.com.",
+		},
+		{
+			name: "enabled-email-local-part-fallback",
 			node: Node{
 				GivenName: "test",
 				User: &User{
 					Email: "person@example.net",
 				},
 			},
-			domain: "example.com",
-			want:   "test.person.example.com.",
+			domain:  "example.com",
+			perUser: true,
+			want:    "test.person.example.com.",
 		},
 		{
-			name: "user-owned-node-without-user",
+			name: "enabled-oidc-user-has-unique-suffix",
 			node: Node{
+				GivenName: "test",
+				User: &User{
+					Model:              gorm.Model{ID: 42},
+					Name:               "user",
+					ProviderIdentifier: sql.NullString{String: "issuer/subject", Valid: true},
+				},
+			},
+			domain:  "example.com",
+			perUser: true,
+			want:    "test.user-42.example.com.",
+		},
+		{
+			name: "enabled-missing-user-has-orphan-fallback",
+			node: Node{
+				ID:        7,
 				GivenName: "test",
 			},
 			domain:  "example.com",
-			wantErr: "failed to create valid FQDN: node user has no name",
+			perUser: true,
+			want:    "test.orphan-7.example.com.",
+		},
+		{
+			name: "enabled-normalizes-user-label",
+			node: Node{
+				GivenName: "test",
+				User: &User{
+					Name: "User Name",
+				},
+			},
+			domain:  "example.com",
+			perUser: true,
+			want:    "test.username.example.com.",
 		},
 		{
 			name: "no-given-name",
@@ -196,6 +230,7 @@ func TestNodeFQDN(t *testing.T) {
 				},
 			},
 			domain:  "example.com",
+			perUser: true,
 			wantErr: "failed to create valid FQDN: node has no given name",
 		},
 		{
@@ -205,24 +240,14 @@ func TestNodeFQDN(t *testing.T) {
 				Tags:      []string{"tag:server"},
 			},
 			domain:  "example.com",
+			perUser: true,
 			wantErr: fmt.Sprintf("failed to create valid FQDN (%s.example.com.): hostname too long, cannot except 255 ASCII chars", strings.Repeat("a", 256)),
-		},
-		{
-			name: "no-dnsconfig",
-			node: Node{
-				GivenName: "test",
-				User: &User{
-					Name: "user",
-				},
-			},
-			domain: "example.com",
-			want:   "test.user.example.com.",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.node.GetFQDN(tc.domain)
+			got, err := tc.node.GetFQDN(tc.domain, tc.perUser)
 
 			t.Logf("GOT: %q, %q", got, tc.domain)
 

@@ -413,29 +413,38 @@ func (node *Node) Proto() *v1.Node {
 	return nodeProto
 }
 
-func (node *Node) GetFQDN(baseDomain string) (string, error) {
+// GetFQDN returns the node's DNS name. When perUserSubdomains is true,
+// untagged nodes are named inside their user's subdomain instead of receiving
+// a tailnet-wide alias. Omitting it preserves the stock behavior.
+func (node *Node) GetFQDN(baseDomain string, perUserSubdomains ...bool) (string, error) {
 	if node.GivenName == "" {
 		return "", fmt.Errorf("failed to create valid FQDN: %w", ErrNodeHasNoGivenName)
 	}
 
 	hostname := node.GivenName
+	perUser := len(perUserSubdomains) > 0 && perUserSubdomains[0]
 
 	if baseDomain != "" {
-		// Tagged nodes keep the tailnet-wide name. User-owned nodes are named
-		// inside their user's subdomain instead, with no base-domain alias.
-		if !node.IsTagged() {
-			if node.User == nil {
-				return "", fmt.Errorf("failed to create valid FQDN: %w", ErrNodeUserHasNoName)
-			}
+		if perUser && !node.IsTagged() {
+			// Orphaned nodes get a deterministic name instead of breaking every
+			// unrelated peer's network map. Tagged nodes bypass this logic even
+			// when their creator is recorded in User.
+			userDomain := fmt.Sprintf("orphan-%s", node.ID)
+			if node.User != nil {
+				username := node.User.Name
+				if username == "" {
+					username, _, _ = strings.Cut(node.User.Username(), "@")
+				}
 
-			username := node.User.Name
-			if username == "" {
-				username, _, _ = strings.Cut(node.User.Username(), "@")
-			}
-
-			userDomain, err := util.NormaliseHostname(username)
-			if err != nil {
-				return "", fmt.Errorf("failed to create valid FQDN for user %q: %w", username, err)
+				normalized, err := util.NormaliseHostname(username)
+				if err == nil {
+					userDomain = normalized
+					if node.User.ProviderIdentifier.Valid {
+						// OIDC permits duplicate usernames, so include the stable
+						// account ID to make the namespace collision-proof.
+						userDomain = fmt.Sprintf("%s-%s", userDomain, node.User.StringID())
+					}
+				}
 			}
 
 			hostname = fmt.Sprintf("%s.%s", hostname, userDomain)
@@ -869,12 +878,12 @@ func (nv NodeView) PeerChangeFromMapRequest(req tailcfg.MapRequest) tailcfg.Peer
 }
 
 // GetFQDN returns the fully qualified domain name for the node.
-func (nv NodeView) GetFQDN(baseDomain string) (string, error) {
+func (nv NodeView) GetFQDN(baseDomain string, perUserSubdomains ...bool) (string, error) {
 	if !nv.Valid() {
 		return "", errors.New("failed to create valid FQDN: node view is invalid")
 	}
 
-	return nv.ж.GetFQDN(baseDomain)
+	return nv.ж.GetFQDN(baseDomain, perUserSubdomains...)
 }
 
 // ExitRoutes returns a list of both exit routes if the
@@ -1043,7 +1052,7 @@ func (nv NodeView) TailNode(
 		return nil, ErrInvalidNodeView
 	}
 
-	hostname, err := nv.GetFQDN(cfg.BaseDomain)
+	hostname, err := nv.GetFQDN(cfg.BaseDomain, cfg.DNSConfig.PerUserSubdomains)
 	if err != nil {
 		return nil, err
 	}
