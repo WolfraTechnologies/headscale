@@ -3,6 +3,7 @@ package integration
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,9 @@ func TestResolveMagicDNS(t *testing.T) {
 	require.NoError(t, err)
 	defer scenario.ShutdownAssertNoPanics(t)
 
-	err = scenario.CreateHeadscaleEnv([]tsic.Option{}, hsic.WithTestName("magicdns"))
+	err = scenario.CreateHeadscaleEnv([]tsic.Option{}, hsic.WithTestName("magicdns"), hsic.WithConfigEnv(map[string]string{
+		"HEADSCALE_DNS_PER_USER_SUBDOMAINS": "true",
+	}))
 	requireNoErrHeadscaleEnv(t, err)
 
 	allClients, err := scenario.ListTailscaleClients()
@@ -115,6 +118,9 @@ func TestResolveTaggedMagicDNS(t *testing.T) {
 		[]string{"tag:server"},
 		"",
 		hsic.WithTestName("taggedmagicdns"),
+		hsic.WithConfigEnv(map[string]string{
+			"HEADSCALE_DNS_PER_USER_SUBDOMAINS": "true",
+		}),
 	)
 	requireNoErrHeadscaleEnv(t, err)
 
@@ -153,6 +159,150 @@ func TestResolveTaggedMagicDNS(t *testing.T) {
 	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
 		_, _, err := client.Execute([]string{"tailscale", "ip", userAlias})
 		assert.Error(ct, err, "tagged node must not receive a per-user alias %s", userAlias)
+	}, 30*time.Second, 2*time.Second)
+}
+
+func TestResolveMagicDNSDefaultOff(t *testing.T) {
+	IntegrationSkip(t)
+
+	spec := ScenarioSpec{
+		NodesPerUser: 1,
+		Users:        []string{"user1"},
+		Versions:     MustTestVersions[1:],
+	}
+
+	scenario, err := NewScenario(spec)
+
+	require.NoError(t, err)
+	defer scenario.ShutdownAssertNoPanics(t)
+
+	err = scenario.CreateHeadscaleEnv([]tsic.Option{}, hsic.WithTestName("stockmagicdns"))
+	requireNoErrHeadscaleEnv(t, err)
+
+	err = scenario.WaitForTailscaleSync()
+	requireNoErrSync(t, err)
+
+	allClients, err := scenario.ListTailscaleClients()
+	requireNoErrListClients(t, err)
+	require.Len(t, allClients, 1)
+	client := allClients[0]
+
+	var peerFQDN string
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		peerFQDN, err = client.FQDN()
+		assert.NoError(ct, err)
+	}, 30*time.Second, 2*time.Second)
+
+	expectedFQDN := client.Hostname() + ".headscale.net."
+	assert.Equal(t, expectedFQDN, peerFQDN)
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		result, _, err := client.Execute([]string{"tailscale", "ip", expectedFQDN})
+		assert.NoError(ct, err)
+
+		ips, err := client.IPs()
+		assert.NoError(ct, err)
+
+		for _, ip := range ips {
+			assert.Contains(ct, result, ip.String())
+		}
+	}, 30*time.Second, 2*time.Second)
+
+	userAlias := client.Hostname() + ".user1.headscale.net."
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		_, _, err := client.Execute([]string{"tailscale", "ip", userAlias})
+		assert.Error(ct, err, "default-off mode must not create per-user alias %s", userAlias)
+	}, 30*time.Second, 2*time.Second)
+}
+
+func TestMagicDNSLifecycle(t *testing.T) {
+	IntegrationSkip(t)
+
+	spec := ScenarioSpec{
+		NodesPerUser: 1,
+		Users:        []string{"user1"},
+		Versions:     MustTestVersions[1:],
+	}
+
+	scenario, err := NewScenario(spec)
+
+	require.NoError(t, err)
+	defer scenario.ShutdownAssertNoPanics(t)
+
+	err = scenario.CreateHeadscaleEnv([]tsic.Option{}, hsic.WithTestName("magicdnslifecycle"), hsic.WithConfigEnv(map[string]string{
+		"HEADSCALE_DNS_PER_USER_SUBDOMAINS": "true",
+	}))
+	requireNoErrHeadscaleEnv(t, err)
+
+	err = scenario.WaitForTailscaleSync()
+	requireNoErrSync(t, err)
+
+	allClients, err := scenario.ListTailscaleClients()
+	requireNoErrListClients(t, err)
+	require.Len(t, allClients, 1)
+	client := allClients[0]
+	headscale, err := scenario.Headscale()
+	require.NoError(t, err)
+
+	var userID uint64
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		users, err := headscale.MapUsers()
+		assert.NoError(ct, err)
+
+		userID = users["user1"].GetId()
+	}, 30*time.Second, 2*time.Second)
+
+	var nodeID uint64
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		nodes, err := headscale.ListNodes("user1")
+		assert.NoError(ct, err)
+		assert.Len(ct, nodes, 1)
+		nodeID = nodes[0].GetId()
+	}, 30*time.Second, 2*time.Second)
+
+	_, err = headscale.Execute([]string{"headscale", "users", "rename", "--identifier", strconv.FormatUint(userID, 10), "--new-name", "renamed"})
+	require.NoError(t, err)
+
+	expectedFQDN := client.Hostname() + ".renamed.headscale.net."
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		fqdn, err := client.FQDN()
+		assert.NoError(ct, err)
+		assert.Equal(ct, expectedFQDN, fqdn)
+	}, 30*time.Second, 2*time.Second)
+
+	oldAlias := client.Hostname() + ".user1.headscale.net."
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		_, _, err := client.Execute([]string{"tailscale", "ip", oldAlias})
+		assert.Error(ct, err, "old user alias %s should disappear after rename", oldAlias)
+	}, 30*time.Second, 2*time.Second)
+
+	err = headscale.DeleteNode(nodeID)
+	require.NoError(t, err)
+
+	key, err := scenario.CreatePreAuthKey(userID, true, false)
+	require.NoError(t, err)
+
+	err = client.Login(headscale.GetEndpoint(), key.GetKey())
+	require.NoError(t, err)
+
+	err = scenario.WaitForTailscaleSync()
+	requireNoErrSync(t, err)
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		fqdn, err := client.FQDN()
+		assert.NoError(ct, err)
+		assert.Equal(ct, expectedFQDN, fqdn)
+	}, 30*time.Second, 2*time.Second)
+
+	assert.EventuallyWithT(t, func(ct *assert.CollectT) {
+		_, _, err := client.Execute([]string{"tailscale", "ip", oldAlias})
+		assert.Error(ct, err, "old user alias %s must stay absent after re-registration", oldAlias)
 	}, 30*time.Second, 2*time.Second)
 }
 
